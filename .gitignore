@@ -192,3 +192,6 @@ data/
 
 # uv lock file
 uv.lock
+
+# Keep keyword regression tests in the fork.
+!tests/test_*.py

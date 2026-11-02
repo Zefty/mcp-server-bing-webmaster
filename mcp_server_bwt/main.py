@@ -5,8 +5,10 @@ An MCP server that provides integration with Bing Webmaster Tools,
 enabling site management and analytics through AI assistants.
 """
 
+import asyncio
 import logging
 import os
+from datetime import date, timedelta
 from typing import Annotated, Any, Dict, List, Optional
 
 import httpx
@@ -32,6 +34,7 @@ class BingWebmasterAPI:
 
     def __init__(self, api_key: str):
         self.api_key = api_key
+        self.read_only = os.getenv("BING_WEBMASTER_READ_ONLY", "").lower() in {"1", "true", "yes"}
         self.base_url = API_BASE_URL
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -52,6 +55,8 @@ class BingWebmasterAPI:
         params: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Make a request to the Bing API and handle OData responses."""
+        if self.read_only and (method != "GET" or not endpoint.startswith("Get")):
+            raise ValueError("Bing mutation endpoints are disabled in read-only mode")
         client = await self._ensure_client()
 
         headers = {"Content-Type": "application/json; charset=utf-8"}
@@ -348,46 +353,57 @@ async def remove_sitemap(
 
 
 # Keyword Analysis Tools
+def _keyword_params(
+    query: str,
+    country: str,
+    language: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict[str, str]:
+    """Build market-wide Bing parameters; siteUrl is not a keyword API parameter."""
+    params = {"q": query, "country": country, "language": language}
+    if start_date is not None or end_date is not None:
+        end = date.fromisoformat(end_date) if end_date else date.today()
+        start = date.fromisoformat(start_date) if start_date else end - timedelta(days=90)
+        if start > end:
+            raise ValueError("start_date must be on or before end_date")
+        params.update(startDate=start.isoformat(), endDate=end.isoformat())
+    return params
+
+
 @mcp.tool(
     name="get_keyword_data",
-    description="Get detailed data for a specific keyword/query.",
+    description="Get market-wide keyword demand for a country, language and date range.",
 )
 async def get_keyword_data(
-    site_url: Annotated[str, "The URL of the site"],
+    site_url: Annotated[str, "Compatibility argument; keyword demand is market-wide"],
     query: Annotated[str, "The keyword/query to analyze"],
+    country: Annotated[str, "Country code, e.g. us or au"] = "us",
+    language: Annotated[str, "Language tag, e.g. en-US or en-AU"] = "en-US",
+    start_date: Annotated[Optional[str], "ISO start date; defaults to 90 days before end"] = None,
+    end_date: Annotated[Optional[str], "ISO end date; defaults to today"] = None,
 ) -> Dict[str, Any]:
-    """
-    Get detailed data for a specific keyword/query.
-
-    Args:
-        site_url: The URL of the site
-        query: The keyword/query to analyze
-
-    Returns:
-        Keyword performance data
-    """
-    data = await api._make_request("GetKeyword", params={"siteUrl": site_url, "query": query})
+    """Get demand. site_url is retained for existing clients but not sent to Bing."""
+    params = _keyword_params(query, country, language, start_date or "", end_date)
+    data = await api._make_request("GetKeyword", params=params)
     return api._ensure_type_field(data, "KeywordData")
 
 
-@mcp.tool(name="get_related_keywords", description="Get keywords related to a specific query.")
+@mcp.tool(
+    name="get_related_keywords",
+    description="Get market-wide related keywords for a country, language and date range.",
+)
 async def get_related_keywords(
-    site_url: Annotated[str, "The URL of the site"],
+    site_url: Annotated[str, "Compatibility argument; keyword demand is market-wide"],
     query: Annotated[str, "The base keyword/query"],
+    country: Annotated[str, "Country code, e.g. us or au"] = "us",
+    language: Annotated[str, "Language tag, e.g. en-US or en-AU"] = "en-US",
+    start_date: Annotated[Optional[str], "ISO start date; defaults to 90 days before end"] = None,
+    end_date: Annotated[Optional[str], "ISO end date; defaults to today"] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Get keywords related to a specific query.
-
-    Args:
-        site_url: The URL of the site
-        query: The base keyword/query
-
-    Returns:
-        List of related keywords
-    """
-    keywords = await api._make_request(
-        "GetRelatedKeywords", params={"siteUrl": site_url, "query": query}
-    )
+    """Expand keywords. Empty results are preserved, not replaced with fabricated rows."""
+    params = _keyword_params(query, country, language, start_date or "", end_date)
+    keywords = await api._make_request("GetRelatedKeywords", params=params)
     return api._ensure_type_field(keywords, "RelatedKeyword")
 
 
@@ -613,30 +629,15 @@ async def submit_content(
     description="Get historical statistics for a specific keyword.",
 )
 async def get_keyword_stats(
-    site_url: Annotated[str, "The URL of the site"],
+    site_url: Annotated[str, "Compatibility argument; keyword trends are market-wide"],
     query: Annotated[str, "The keyword/query to analyze"],
-    country: Annotated[str, "Country code (e.g., 'US', 'GB')"] = "",
-    language: Annotated[str, "Language code (e.g., 'en', 'fr')"] = "",
-) -> Dict[str, Any]:
-    """
-    Get historical statistics for a specific keyword.
-
-    Args:
-        site_url: The URL of the site
-        query: The keyword/query to analyze
-        country: Country code (optional)
-        language: Language code (optional)
-
-    Returns:
-        Historical keyword statistics
-    """
-    req_params: Dict[str, Any] = {"siteUrl": site_url, "query": query}
-    if country:
-        req_params["country"] = country
-    if language:
-        req_params["language"] = language
-
-    stats = await api._make_request("GetKeywordStats", params=req_params)
+    country: Annotated[str, "Country code, e.g. us or au"] = "us",
+    language: Annotated[str, "Language tag, e.g. en-US or en-AU"] = "en-US",
+) -> List[Dict[str, Any]]:
+    """Get historical weekly rows, including a valid empty list when not reported."""
+    stats = await api._make_request(
+        "GetKeywordStats", params=_keyword_params(query, country, language)
+    )
     return api._ensure_type_field(stats, "KeywordStats")
 
 
@@ -1430,10 +1431,19 @@ async def remove_country_region_settings(
     return {"message": f"Country settings for {country_code} removed successfully"}
 
 
+async def configure_read_only() -> None:
+    """Hide mutation tools when read-only mode is enabled; the API guard also blocks them."""
+    if api.read_only:
+        for tool in await mcp.list_tools():
+            if not tool.name.startswith("get_"):
+                mcp.remove_tool(tool.name)
+
+
 def app() -> None:
     """MCP server entrypoint."""
     if not API_KEY:
         raise ValueError("BING_WEBMASTER_API_KEY environment variable is required")
+    asyncio.run(configure_read_only())
     logger.info("Starting Bing Webmaster MCP server")
     mcp.run(transport="stdio")
 
