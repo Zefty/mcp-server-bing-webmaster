@@ -435,3 +435,25 @@ MIT License - see LICENSE file for details.
 
 For issues, questions, or contributions, please visit:
 https://github.com/isiahw1/mcp-server-bing-webmaster
+
+## Fork: corrected keyword research and read-only mode
+
+Keyword research uses market-wide `q`, `country` and `language` parameters, not
+site traffic parameters. `site_url` is retained for compatibility but is not sent
+to these three endpoints. Demand and related tools now accept `start_date` and
+`end_date` (ISO dates); omitted dates default to a 90-day range ending today.
+Defaults are `us` / `en-US`; use `au` / `en-AU` for Australia. Trend results are
+weekly lists, including valid empty lists. Empty results do not prove zero demand.
+
+Set `BING_WEBMASTER_READ_ONLY=true` to expose only `get_*` tools and reject
+mutation endpoints in the API client before any HTTP request. Existing behaviour
+is preserved when this variable is unset. MCP SDK is constrained to 1.x because
+this server uses `mcp.server.fastmcp`.
+
+Validation: `uv sync --group dev && uv run pytest tests`.
+`scripts/smoke-keywords.py` makes only keyword reads, using the existing
+`bing_webmaster` API key in the local Codex config; it never prints the key.
+
+API contracts: [demand](https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.iwebmasterapi.getkeyword),
+[related](https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.iwebmasterapi.getrelatedkeywords),
+[trends](https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.iwebmasterapi.getkeywordstats).
